@@ -20,6 +20,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Only Apple Silicon macOS is released (the Homebrew formula installs this build).
+  TARGET: aarch64-apple-darwin
 
 jobs:
   detect:
@@ -58,58 +60,42 @@ jobs:
     uses: ./.github/workflows/checks.yml
 
   build:
-    name: build (${{ matrix.target }})
+    name: build
     needs: [detect, checks]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-latest, target: x86_64-apple-darwin }
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - env:
-          TARGET: ${{ matrix.target }}
-        run: |
+      - run: |
           rustup toolchain install --no-self-update
           rustup target add "$TARGET"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ matrix.target }}
+          key: ${{ env.TARGET }}
 
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cargo build --release --locked --target "$TARGET"
 
       - name: Package
-        shell: bash
         env:
           TAG: ${{ needs.detect.outputs.tag }}
-          TARGET: ${{ matrix.target }}
         run: |
           name="takeout-dl-${TAG}-${TARGET}"
           mkdir "$name"
           cp README.md LICENSE "target/$TARGET/release/takeout-dl" "$name/"
           archive="$name.tar.gz"
           tar czf "$archive" "$name"
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            shasum -a 256 "$archive" > "$archive.sha256"
-          else
-            sha256sum "$archive" > "$archive.sha256"
-          fi
+          shasum -a 256 "$archive" > "$archive.sha256"
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.target }}
+          name: ${{ env.TARGET }}
           path: |
             ${{ env.ARCHIVE }}
             ${{ env.ARCHIVE }}.sha256
           if-no-files-found: error
 
-  # Only this job gets write access, and it runs no third-party actions or build code.
-  # It creates the tag too, so a failed build leaves no tag or partial release behind.
+  # Only `publish` and `homebrew` get write access, and they run no third-party actions or build code.
+  # `publish` creates the tag too, so a failed build leaves no tag or partial release behind.
   publish:
     name: create release
     needs: [detect, build]
@@ -128,3 +114,40 @@ jobs:
           TAG: ${{ needs.detect.outputs.tag }}
           SHA: ${{ github.sha }}
         run: gh release create "$TAG" dist/* --target "$SHA" --title "$TAG" --generate-notes
+
+  # Opens a PR pointing Formula/takeout-dl.rb at the new release. PRs opened with GITHUB_TOKEN
+  # don't trigger the PR checks, so merging it needs a repo admin to bypass the ruleset.
+  homebrew:
+    name: update Homebrew formula
+    needs: [detect, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.TARGET }}
+          path: dist
+      - name: Open formula PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          archive="takeout-dl-${TAG}-${TARGET}.tar.gz"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${archive}"
+          sha=$(cut -d ' ' -f 1 "dist/$archive.sha256")
+          sed -i -E "s|^(  url \").*\"$|\1${url}\"|; s|^(  sha256 \").*\"$|\1${sha}\"|" Formula/takeout-dl.rb
+          if git diff --quiet; then
+            echo "Formula already points at $TAG."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="chore/homebrew-$TAG"
+          git switch -c "$branch"
+          git commit -am "Update Homebrew formula to $TAG"
+          git push -u origin "$branch"
+          gh pr create --base main --title "Update Homebrew formula to $TAG" \
+            --body "Points \`Formula/takeout-dl.rb\` at the $TAG release. Opened by the Release workflow."
