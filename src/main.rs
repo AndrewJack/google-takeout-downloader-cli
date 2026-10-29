@@ -105,14 +105,7 @@ async fn preauth(downloader: &Downloader, parts: &[Part]) -> Result<()> {
         .await;
     pb.finish_and_clear();
 
-    // Nothing authorised: stop now rather than fail every part one by one.
-    if !results.is_empty()
-        && results
-            .iter()
-            .all(|(_, r)| matches!(r, Err(DownloadError::Auth)))
-    {
-        bail!("{}", DownloadError::Auth);
-    }
+    // Keep going after failures: a link saved by an earlier run may still work.
     for (part, result) in &results {
         if let Err(e) = result {
             eprintln!("note: couldn't pre-authorise {}: {e}", part.filename);
