@@ -37,7 +37,7 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
   - `.claude/hooks/protect-main.sh` (PreToolUse on Bash) is a best-effort early warning: it parses the command text, catches commit/push to main before they run, and blocks attempts to skip the git hooks (`--no-verify`, `commit -n`, overriding `core.hooksPath`, touching `CLAUDECODE`).
   - Never bypass either layer. If a hook blocks legitimate work, ask the user.
 - Releases: bump `version` in `Cargo.toml` via PR. Merging it runs `.github/workflows/release.yml`, which builds `aarch64-apple-darwin` (the only release target) and creates the `vX.Y.Z` tag and release with generated notes (only if that release doesn't exist yet). Don't create tags or releases by hand. Re-run the workflow from the Actions tab to retry a failed release.
-- Homebrew: `Formula/takeout-dl.rb` (this repo is the tap). After publishing, the release workflow commits the new `url`/`sha256` itself, pushing with the `HOMEBREW_DEPLOY_KEY` deploy key (a ruleset bypass actor; personal repos can't make GitHub Actions one). Don't edit the url/sha256 by hand.
+- Homebrew: `Formula/takeout-dl.rb` (this repo is the tap). After publishing, the release workflow commits the new `url`/`sha256` itself, pushing with the `HOMEBREW_DEPLOY_KEY` deploy key (a secret in the main-only `homebrew` environment, and a ruleset bypass actor; personal repos can't make GitHub Actions one). Don't edit the url/sha256 by hand.
 
 ## Conventions
 - `thiserror` enums in library modules, `anyhow` only in `main.rs`.
