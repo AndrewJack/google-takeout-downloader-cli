@@ -118,3 +118,7 @@ cargo fmt
 ```
 
 See [CLAUDE.md](CLAUDE.md) for architecture notes.
+
+## License
+
+[MIT](LICENSE)

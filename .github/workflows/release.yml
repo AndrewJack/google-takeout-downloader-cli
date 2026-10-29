@@ -63,7 +63,7 @@ jobs:
         run: |
           name="takeout-dl-${TAG}-${TARGET}"
           mkdir "$name"
-          cp README.md "target/$TARGET/release/takeout-dl" "$name/"
+          cp README.md LICENSE "target/$TARGET/release/takeout-dl" "$name/"
           archive="$name.tar.gz"
           tar czf "$archive" "$name"
           if [ "$RUNNER_OS" = "macOS" ]; then
