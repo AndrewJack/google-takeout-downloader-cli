@@ -294,6 +294,8 @@ impl Downloader {
             pb.set_length(total);
         }
         pb.set_position(start);
+        // The jump to the resume offset isn't transfer speed; don't let it inflate the rate/ETA.
+        pb.reset_eta();
         pb.set_message("");
 
         let mut written = start;

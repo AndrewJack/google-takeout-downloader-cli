@@ -278,3 +278,26 @@ async fn verify_moves_corrupt_file_aside_without_retry() {
         );
     }
 }
+
+#[tokio::test]
+async fn resume_offset_does_not_inflate_speed() {
+    let (server, dir, dl, part) = setup().await;
+    let have = 64 << 20;
+    std::fs::write(dir.path().join(format!("{FILE}.part")), vec![0u8; have]).unwrap();
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header(
+                    "content-range",
+                    format!("bytes {have}-{}/{}", have + 9, have + 10),
+                )
+                .set_body_raw(BODY, "application/x-gzip"),
+        )
+        .mount(&server)
+        .await;
+
+    let pb = ProgressBar::hidden();
+    dl.download(&part, &pb).await.unwrap();
+    // Only the 10 bytes actually transferred count towards the rate, not the 64 MiB on disk.
+    assert!(pb.per_sec() < 1_000_000.0, "rate {} B/s", pb.per_sec());
+}
