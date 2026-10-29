@@ -2,8 +2,8 @@
 class TakeoutDl < Formula
   desc "Download Google Takeout archives with resume, retries and parallel parts"
   homepage "https://github.com/AndrewJack/google-takeout-downloader-cli"
-  url "https://github.com/AndrewJack/google-takeout-downloader-cli/releases/download/v1.1.1/takeout-dl-v1.1.1-aarch64-apple-darwin.tar.gz"
-  sha256 "2ecdd746188c7f249ff2ce790372fe801d29233daba676149c2c84b44a63e823"
+  url "https://github.com/AndrewJack/google-takeout-downloader-cli/releases/download/v1.2.0/takeout-dl-v1.2.0-aarch64-apple-darwin.tar.gz"
+  sha256 "be62cf1c511c1c43d0781819ec12dad48f333687868140e05425b78a2fa2329e"
   license "MIT"
 
   depends_on arch: :arm64
