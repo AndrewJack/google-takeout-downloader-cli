@@ -1,0 +1,10 @@
+#!/bin/sh
+# main is PR-only for Claude: refuse commits made directly on it from a Claude Code session.
+# Humans can still commit to main.
+. "$(dirname "$0")/is-claude.sh"
+is_claude || exit 0
+
+if [ "$(git symbolic-ref --short -q HEAD)" = main ]; then
+  echo "pre-commit: Claude may not commit on main. Create a branch (git switch -c <name>) and open a PR." >&2
+  exit 1
+fi

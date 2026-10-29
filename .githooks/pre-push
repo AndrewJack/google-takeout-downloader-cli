@@ -1,0 +1,14 @@
+#!/bin/sh
+# main is PR-only for Claude: refuse any push from a Claude Code session that updates or
+# deletes the remote main. Humans can still push to main.
+# git passes the resolved refs on stdin (aliases, push.default and refspecs already applied):
+#   <local ref> <local sha> <remote ref> <remote sha>
+. "$(dirname "$0")/is-claude.sh"
+is_claude || exit 0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = refs/heads/main ]; then
+    echo "pre-push: Claude may not push to main ($local_ref -> $remote_ref). Push a branch and open a PR." >&2
+    exit 1
+  fi
+done

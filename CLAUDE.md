@@ -23,6 +23,18 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - `src/urls.rs`: `Part { url, filename }`, part expansion
 - `src/download.rs`: `Downloader`. Writes to `<file>.part` and resumes with `Range`. 206 appends, 200 restarts, 416 means already complete. Checks the size against `Content-Range`/`Content-Length`, then renames to the final name. Backoff retries for network errors, 5xx and 429; attempts that made progress don't use up the retry budget.
 
+## Git workflow
+- Claude never commits or pushes directly to `main`; all Claude changes reach `main` through a PR. (The user may commit to main directly. These rules and hooks apply only to Claude.)
+- Start from an up-to-date main: `git switch main && git pull`, then `git switch -c <type>/<short-desc>` (e.g. `feat/zip-support`, `fix/resume-416`).
+- Commit on the branch, `git push -u origin <branch>`, then `gh pr create`.
+- PR checks (`.github/workflows/pr.yml`): fmt, clippy, and tests on Linux/macOS/Windows. Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` before pushing.
+- Merging is the user's call: don't merge PRs unless asked.
+- Enforcement (GitHub branch protection isn't available on this private free-plan repo, so it's all local):
+  - `.githooks/pre-commit` and `.githooks/pre-push` are the real guard. They only act when run from Claude Code: `CLAUDECODE=1` is set, or a `claude` process is an ancestor (`.githooks/is-claude.sh`; this still catches `env -i`). They do nothing in the user's own terminal. git hands `pre-push` the resolved destination refs, so aliases, `push.default` and upstream config can't get around it. Enable per clone with `git config core.hooksPath .githooks`; a SessionStart hook in `.claude/settings.json` does this automatically.
+  - `.claude/hooks/protect-main.sh` (PreToolUse on Bash) is a best-effort early warning: it parses the command text, catches commit/push to main before they run, and blocks attempts to skip the git hooks (`--no-verify`, `commit -n`, overriding `core.hooksPath`, touching `CLAUDECODE`).
+  - Never bypass either layer. If a hook blocks legitimate work, ask the user.
+- Releases: bump `version` in `Cargo.toml` via PR, merge, then `gh release create vX.Y.Z --generate-notes`. The tag must match the Cargo version or the release workflow fails.
+
 ## Conventions
 - `thiserror` enums in library modules, `anyhow` only in `main.rs`.
 - Never log or print cookie values. `cookies*.txt` and `*.part` are gitignored.
