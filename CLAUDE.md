@@ -3,6 +3,7 @@
 Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to ~50GB each) with resume, retries and parallel parts.
 
 ## Commands
+- Rust version: pinned in `rust-toolchain.toml` (rustup picks it up locally and in CI). Change it only there.
 - Build: `cargo build --release` (binary: `target/release/takeout-dl`)
 - Test: `cargo test` (unit tests in `src/*`, wiremock integration tests in `tests/download.rs`)
 - Lint/format: `cargo clippy --all-targets -- -D warnings`, `cargo fmt`
@@ -27,7 +28,7 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - Claude never commits or pushes directly to `main`; all Claude changes reach `main` through a PR. (The user may commit to main directly. These rules and hooks apply only to Claude.)
 - Start from an up-to-date main: `git switch main && git pull`, then `git switch -c <type>/<short-desc>` (e.g. `feat/zip-support`, `fix/resume-416`).
 - Commit on the branch, `git push -u origin <branch>`, then `gh pr create`.
-- PR checks (`.github/workflows/pr.yml`): fmt, clippy, and tests on Linux/macOS/Windows. Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` before pushing.
+- PR checks (`.github/workflows/pr.yml`): fmt, clippy, and tests on Linux and macOS (Windows is not supported). Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` before pushing.
 - Merging is the user's call: don't merge PRs unless asked.
 - Enforcement (GitHub branch protection isn't available on this private free-plan repo, so it's all local):
   - `.githooks/pre-commit` and `.githooks/pre-push` are the real guard. They only act when run from Claude Code: `CLAUDECODE=1` is set, or a `claude` process is an ancestor (`.githooks/is-claude.sh`; this still catches `env -i`). They do nothing in the user's own terminal. git hands `pre-push` the resolved destination refs, so aliases, `push.default` and upstream config can't get around it. Enable per clone with `git config core.hooksPath .githooks`; a SessionStart hook in `.claude/settings.json` does this automatically.

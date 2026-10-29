@@ -9,3 +9,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # Bumps the pinned version in rust-toolchain.toml.
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly

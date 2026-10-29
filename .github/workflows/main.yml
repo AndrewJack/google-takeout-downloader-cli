@@ -7,8 +7,10 @@ on:
 permissions:
   contents: read
 
+# One group per commit, so every push to main gets a full run and none are cancelled.
 concurrency:
   group: main-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   checks:

@@ -7,6 +7,11 @@ on:
 permissions:
   contents: read
 
+# One release at a time: a newer release waits for the running one instead of cancelling it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -26,13 +31,13 @@ jobs:
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
           - { os: macos-latest, target: aarch64-apple-darwin }
           - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add "$TARGET"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
@@ -58,16 +63,9 @@ jobs:
         run: |
           name="takeout-dl-${TAG}-${TARGET}"
           mkdir "$name"
-          cp README.md "$name/"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp "target/$TARGET/release/takeout-dl.exe" "$name/"
-            archive="$name.zip"
-            7z a "$archive" "$name" > /dev/null
-          else
-            cp "target/$TARGET/release/takeout-dl" "$name/"
-            archive="$name.tar.gz"
-            tar czf "$archive" "$name"
-          fi
+          cp README.md "target/$TARGET/release/takeout-dl" "$name/"
+          archive="$name.tar.gz"
+          tar czf "$archive" "$name"
           if [ "$RUNNER_OS" = "macOS" ]; then
             shasum -a 256 "$archive" > "$archive.sha256"
           else
@@ -75,7 +73,7 @@ jobs:
           fi
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.target }}
           path: |
@@ -91,7 +89,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true

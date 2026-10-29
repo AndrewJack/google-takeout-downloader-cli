@@ -1,0 +1,6 @@
+# Single source of truth for the Rust version, used by rustup locally and in CI.
+# Dependabot (rust-toolchain ecosystem) opens PRs to bump it.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
