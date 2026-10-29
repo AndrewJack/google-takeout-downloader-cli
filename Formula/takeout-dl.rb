@@ -1,4 +1,4 @@
-# Updated by .github/workflows/release.yml on each release (it opens a PR with the new url and sha256).
+# Updated by .github/workflows/release.yml on each release (it commits the new url and sha256).
 class TakeoutDl < Formula
   desc "Download Google Takeout archives with resume, retries and parallel parts"
   homepage "https://github.com/AndrewJack/google-takeout-downloader-cli"

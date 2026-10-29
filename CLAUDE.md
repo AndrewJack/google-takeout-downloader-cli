@@ -32,12 +32,12 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - PR checks (`.github/workflows/pr.yml`): fmt, clippy and tests, all on macOS (Apple Silicon is the only supported platform). Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` before pushing.
 - Merging is the user's call: don't merge PRs unless asked.
 - Enforcement:
-  - GitHub ruleset "protect main": PRs only, required checks (`checks / fmt + clippy`, `checks / test (macos-latest)`), no force-push or deletion. Repo admins bypass it, so the user can still push to main; Claude's pushes to main are stopped by the local layers below.
+  - GitHub ruleset "protect main": PRs only, required checks (`checks / fmt + clippy`, `checks / test (macos-latest)`), no force-push or deletion. Repo admins bypass it, so the user can still push to main, as does GitHub Actions (only the release workflow's Homebrew formula commit uses this); Claude's pushes to main are stopped by the local layers below.
   - `.githooks/pre-commit` and `.githooks/pre-push` are the real guard. They only act when run from Claude Code: `CLAUDECODE=1` is set, or a `claude` process is an ancestor (`.githooks/is-claude.sh`; this still catches `env -i`). They do nothing in the user's own terminal. git hands `pre-push` the resolved destination refs, so aliases, `push.default` and upstream config can't get around it. Enable per clone with `git config core.hooksPath .githooks`; a SessionStart hook in `.claude/settings.json` does this automatically.
   - `.claude/hooks/protect-main.sh` (PreToolUse on Bash) is a best-effort early warning: it parses the command text, catches commit/push to main before they run, and blocks attempts to skip the git hooks (`--no-verify`, `commit -n`, overriding `core.hooksPath`, touching `CLAUDECODE`).
   - Never bypass either layer. If a hook blocks legitimate work, ask the user.
 - Releases: bump `version` in `Cargo.toml` via PR. Merging it runs `.github/workflows/release.yml`, which builds `aarch64-apple-darwin` (the only release target) and creates the `vX.Y.Z` tag and release with generated notes (only if that release doesn't exist yet). Don't create tags or releases by hand. Re-run the workflow from the Actions tab to retry a failed release.
-- Homebrew: `Formula/takeout-dl.rb` (this repo is the tap). After publishing, the release workflow opens a PR updating its `url`/`sha256`; the user merges it with an admin bypass (PRs opened by `GITHUB_TOKEN` don't run the checks). Don't edit the url/sha256 by hand.
+- Homebrew: `Formula/takeout-dl.rb` (this repo is the tap). After publishing, the release workflow commits the new `url`/`sha256` itself (GitHub Actions is a bypass actor in the ruleset). Don't edit the url/sha256 by hand.
 
 ## Conventions
 - `thiserror` enums in library modules, `anyhow` only in `main.rs`.
