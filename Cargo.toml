@@ -1,6 +1,6 @@
 [package]
 name = "takeout-dl"
-version = "1.1.1"
+version = "1.2.0"
 edition = "2024"
 license = "MIT"
 
@@ -12,7 +12,7 @@ futures-util = "0.3.34"
 indicatif = "0.18.6"
 reqwest = { version = "0.13.5", default-features = false, features = ["stream", "rustls", "http2", "cookies"] }
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "signal"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "signal", "sync"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = "2.5.8"

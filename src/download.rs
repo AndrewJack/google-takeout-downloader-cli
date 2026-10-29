@@ -1,7 +1,9 @@
 //! Resumable, retrying download of a single Takeout part.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use futures_util::StreamExt;
@@ -12,6 +14,7 @@ use reqwest::header::{
 use reqwest::{Client, StatusCode, redirect};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::watch;
 
 use crate::urls::Part;
 use crate::verify;
@@ -19,6 +22,8 @@ use crate::verify;
 const LOGIN_HOST: &str = "accounts.google.com";
 const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const MAX_BACKOFF: Duration = Duration::from_secs(60);
+/// Default download speed for a part that is waiting for its turn.
+pub const DEFAULT_TRICKLE_RATE: u64 = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
@@ -63,12 +68,116 @@ pub enum Outcome {
     AlreadyPresent,
 }
 
+/// The download queue: hands out `slots` full-speed slots in the order parts joined.
+///
+/// Google only checks the login when a download starts, so every part starts straight away.
+/// Parts whose turn hasn't come yet download at the trickle rate, which keeps the connection
+/// alive and gets the login check done while the cookies are fresh. Once a part has a slot,
+/// it downloads at full speed until it finishes.
+pub struct Queue {
+    slots: usize,
+    next_ticket: AtomicUsize,
+    /// Tickets of parts that haven't finished yet.
+    live: Mutex<BTreeSet<usize>>,
+    changed: watch::Sender<()>,
+}
+
+impl Queue {
+    pub fn new(slots: usize) -> Arc<Self> {
+        Arc::new(Self {
+            slots: slots.max(1),
+            next_ticket: AtomicUsize::new(0),
+            live: Mutex::new(BTreeSet::new()),
+            changed: watch::channel(()).0,
+        })
+    }
+
+    /// Takes the next place in the queue.
+    pub fn join(self: &Arc<Self>) -> Turn {
+        let ticket = self.next_ticket.fetch_add(1, Ordering::Relaxed);
+        self.live().insert(ticket);
+        Turn {
+            place: Some(Place {
+                queue: self.clone(),
+                ticket,
+                changed: self.changed.subscribe(),
+            }),
+            has_slot: false,
+        }
+    }
+
+    fn live(&self) -> std::sync::MutexGuard<'_, BTreeSet<usize>> {
+        self.live.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+struct Place {
+    queue: Arc<Queue>,
+    ticket: usize,
+    changed: watch::Receiver<()>,
+}
+
+/// A part's place in the [`Queue`]. Dropping it (the part finished or failed) moves the queue on.
+pub struct Turn {
+    place: Option<Place>,
+    has_slot: bool,
+}
+
+impl Turn {
+    /// Full speed straight away, outside any queue.
+    pub fn now() -> Self {
+        Self {
+            place: None,
+            has_slot: true,
+        }
+    }
+
+    /// Whether the part may download at full speed: it's among the first `slots` unfinished parts.
+    fn has_slot(&mut self) -> bool {
+        if !self.has_slot
+            && let Some(p) = &self.place
+        {
+            self.has_slot = p.queue.live().range(..p.ticket).count() < p.queue.slots;
+        }
+        self.has_slot
+    }
+
+    /// Resolves once the part has a slot. Cancel-safe.
+    async fn wait(&mut self) {
+        loop {
+            if let Some(p) = &mut self.place {
+                p.changed.borrow_and_update();
+            }
+            if self.has_slot() {
+                return;
+            }
+            match &mut self.place {
+                // The sender lives in the queue, which this place keeps alive.
+                Some(p) => {
+                    let _ = p.changed.changed().await;
+                }
+                None => return,
+            }
+        }
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        if let Some(p) = &self.place {
+            p.queue.live().remove(&p.ticket);
+            p.queue.changed.send_replace(());
+        }
+    }
+}
+
 pub struct Downloader {
-    client: Client,
+    jar: Arc<reqwest::cookie::Jar>,
     out_dir: PathBuf,
     retries: u32,
     base_backoff: Duration,
     verify: bool,
+    trickle_rate: u64,
 }
 
 impl Downloader {
@@ -77,34 +186,22 @@ impl Downloader {
         out_dir: PathBuf,
         retries: u32,
     ) -> reqwest::Result<Self> {
-        // Stop at the login redirect so it surfaces as an auth error rather than an HTML "download".
-        let policy = redirect::Policy::custom(|attempt| {
-            if attempt.url().host_str() == Some(LOGIN_HOST) {
-                attempt.stop()
-            } else if attempt.previous().len() > 10 {
-                attempt.error("too many redirects")
-            } else {
-                attempt.follow()
-            }
-        });
-        let client = Client::builder()
-            .cookie_provider(jar)
-            .redirect(policy)
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(120))
-            // Google serves HTTP/2, so parallel parts share one connection. hyper's fixed
-            // 2 MiB stream window caps each part at ~window/RTT (~19 MiB/s at 100 ms);
-            // adaptive windows grow to the measured bandwidth-delay product instead.
-            .http2_adaptive_window(true)
-            .build()?;
+        // Build one up front so a broken TLS setup fails at startup, not per part.
+        build_client(jar.clone())?;
         Ok(Self {
-            client,
+            jar,
             out_dir,
             retries,
             base_backoff: Duration::from_secs(1),
             verify: false,
+            trickle_rate: DEFAULT_TRICKLE_RATE,
         })
+    }
+
+    /// Bytes per second for parts waiting for their turn (minimum 1).
+    pub fn with_trickle_rate(mut self, bytes_per_sec: u64) -> Self {
+        self.trickle_rate = bytes_per_sec.max(1);
+        self
     }
 
     /// Shortens retry delays; for tests.
@@ -120,10 +217,23 @@ impl Downloader {
     }
 
     pub async fn download(&self, part: &Part, pb: &ProgressBar) -> Result<Outcome, DownloadError> {
+        self.download_queued(part, pb, Turn::now()).await
+    }
+
+    /// Downloads a part, trickling until `turn` gives it a slot.
+    pub async fn download_queued(
+        &self,
+        part: &Part,
+        pb: &ProgressBar,
+        mut turn: Turn,
+    ) -> Result<Outcome, DownloadError> {
         let dest = self.out_dir.join(&part.filename);
         if fs::try_exists(&dest).await? {
             return Ok(Outcome::AlreadyPresent);
         }
+        // Each part gets its own connection. On a shared HTTP/2 connection, slow parts would
+        // hold on to the connection's flow-control window and stall the full-speed ones.
+        let client = build_client(self.jar.clone())?;
         let tmp = self.out_dir.join(format!("{}.part", part.filename));
         let validator = self
             .out_dir
@@ -132,7 +242,10 @@ impl Downloader {
         let mut failures = 0;
         loop {
             let before = file_len(&tmp).await?;
-            match self.attempt(part, &tmp, &validator, pb).await {
+            match self
+                .attempt(&client, part, &tmp, &validator, pb, &mut turn)
+                .await
+            {
                 Ok(()) => {
                     // On disk before it gets the final name, so a crash can't leave it truncated.
                     sync(&tmp).await?;
@@ -205,13 +318,15 @@ impl Downloader {
 
     async fn attempt(
         &self,
+        client: &Client,
         part: &Part,
         tmp: &Path,
         validator: &Path,
         pb: &ProgressBar,
+        turn: &mut Turn,
     ) -> Result<(), DownloadError> {
         let offset = file_len(tmp).await?;
-        let mut req = self.client.get(part.url.clone());
+        let mut req = client.get(part.url.clone());
         if offset > 0 {
             req = req.header(RANGE, format!("bytes={offset}-"));
             // Only resume if the file hasn't changed since the .part was started; otherwise the
@@ -296,7 +411,7 @@ impl Downloader {
         pb.set_position(start);
         // The jump to the resume offset isn't transfer speed; don't let it inflate the rate/ETA.
         pb.reset_eta();
-        pb.set_message("");
+        pb.set_message(if turn.has_slot() { "" } else { "queued" });
 
         let mut written = start;
         let mut stream = resp.bytes_stream();
@@ -306,6 +421,20 @@ impl Downloader {
                 writer.write_all(&chunk).await?;
                 written += chunk.len() as u64;
                 pb.set_position(written);
+                if !turn.has_slot() {
+                    // Not our turn yet: hold the transfer to the trickle rate, but switch to
+                    // full speed the moment a slot frees up.
+                    let pause =
+                        Duration::from_secs_f64(chunk.len() as f64 / self.trickle_rate as f64);
+                    tokio::select! {
+                        () = tokio::time::sleep(pause) => {}
+                        () = turn.wait() => {
+                            pb.set_message("");
+                            // The queued bytes weren't full-speed transfer; don't skew the ETA.
+                            pb.reset_eta();
+                        }
+                    }
+                }
             }
             Ok::<_, DownloadError>(())
         }
@@ -322,6 +451,29 @@ impl Downloader {
             _ => Ok(()),
         }
     }
+}
+
+fn build_client(jar: Arc<reqwest::cookie::Jar>) -> reqwest::Result<Client> {
+    // Stop at the login redirect so it surfaces as an auth error rather than an HTML "download".
+    let policy = redirect::Policy::custom(|attempt| {
+        if attempt.url().host_str() == Some(LOGIN_HOST) {
+            attempt.stop()
+        } else if attempt.previous().len() > 10 {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    });
+    Client::builder()
+        .cookie_provider(jar)
+        .redirect(policy)
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(120))
+        // hyper's fixed 2 MiB HTTP/2 stream window caps a download at ~window/RTT
+        // (~19 MiB/s at 100 ms); adaptive windows grow to the bandwidth-delay product instead.
+        .http2_adaptive_window(true)
+        .build()
 }
 
 async fn file_len(path: &Path) -> std::io::Result<u64> {
