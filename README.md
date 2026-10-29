@@ -6,11 +6,12 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 
 ## Features
 
-- **Resume**: partial downloads are kept as `<name>.part` and continue where they stopped, including after Ctrl-C.
+- **Resume**: partial downloads are kept as `<name>.part` and continue where they stopped, including after Ctrl-C. If Google's copy of the file has changed since the `.part` was started, it restarts instead of joining two different files.
 - **Retries**: network errors, 5xx and 429 responses are retried with exponential backoff.
 - **Parallel**: downloads several parts at once (`-j`).
 - **Part expansion**: give the link to part 001 and `-p N`, and it works out the links for parts 002…N.
-- **Safe output**: a file only gets its final name once its size has been checked. Parts that already exist are skipped.
+- **Safe output**: a file only gets its final name once its size has been checked and it has been flushed to disk. Parts that already exist are skipped.
+- **Integrity check** (`--verify`): decompresses each `.tgz` part to check gzip's built-in checksum before giving it its final name.
 - **Clear auth errors**: if Google sends a login page, it says so instead of saving HTML as a `.tgz`.
 
 ## Install
@@ -55,8 +56,8 @@ Always quote the URL: it contains `&`.
 # Preview the part links that will be downloaded (no cookies needed)
 takeout-dl --dry-run -p 5 'https://takeout-download.usercontent.google.com/download/takeout-...-001.tgz?...'
 
-# Download all 5 parts into ~/Takeout
-takeout-dl -c cookies.txt -p 5 -o ~/Takeout 'https://takeout-download.usercontent.google.com/download/takeout-...-001.tgz?...'
+# Download all 5 parts into ~/Takeout, checking each one
+takeout-dl -c cookies.txt -p 5 -o ~/Takeout --verify 'https://takeout-download.usercontent.google.com/download/takeout-...-001.tgz?...'
 ```
 
 If the download is interrupted, run the same command again. Finished parts are skipped and partial ones continue where they stopped.
@@ -88,6 +89,7 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 | `-o, --out-dir <DIR>` | `.` | Where to save the archives |
 | `-j, --jobs <N>` | `2` | Parts to download at the same time |
 | `--retries <N>` | `5` | Retries per part. Attempts that made progress don't count against this |
+| `--verify` | | Check each `.tgz` part end to end (gzip CRC) after it downloads. Adds up to a few minutes per 50 GB part. `.zip` parts aren't checked |
 | `--dry-run` | | Print the expanded part links and exit |
 
 `takeout-dl` exits non-zero if any part failed. Run it again to retry only the failed parts.
@@ -98,6 +100,10 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 - Cookies are missing or expired: export `cookies.txt` again.
 - Google may require a recent password check before downloads. Click one **Download** button in your browser, enter your password if asked, cancel the download, then export the cookies again.
 - Make sure the cookies come from the same Google account as the export (the `authuser`/`user` values in the link).
+
+**`failed integrity check (...); kept as <name>.corrupt`**: the downloaded part is damaged. Run the same command again to download it from scratch, then delete the `.corrupt` file.
+
+**Checking parts you already downloaded**: `--verify` only checks parts as they finish. To check existing files, run `gzip -t <file>.tgz` (or `unzip -tq <file>.zip`).
 
 **`HTTP 404` / `HTTP 410`**: the download links expire, usually 7 days after the export was created. Create a new export.
 

@@ -9,6 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use takeout_dl::cookies;
 use takeout_dl::download::{Downloader, Outcome};
 use takeout_dl::urls::{self, Part};
+use takeout_dl::verify;
 
 /// Download Google Takeout archives with resume, retries and parallel parts.
 #[derive(Parser, Debug)]
@@ -40,6 +41,10 @@ struct Args {
     /// Retries per part after failures that made no progress.
     #[arg(long, default_value_t = 5)]
     retries: u32,
+
+    /// Check each downloaded .tgz part end to end (gzip CRC) before giving it its final name.
+    #[arg(long)]
+    verify: bool,
 
     /// Print the parts that would be downloaded and exit.
     #[arg(long)]
@@ -98,7 +103,15 @@ async fn main() -> Result<ExitCode> {
     let jar = cookies::load(cookie_path)?;
     std::fs::create_dir_all(&args.out_dir)
         .with_context(|| format!("creating {}", args.out_dir.display()))?;
-    let downloader = Downloader::new(jar, args.out_dir.clone(), args.retries)?;
+    let downloader =
+        Downloader::new(jar, args.out_dir.clone(), args.retries)?.with_verify(args.verify);
+    let unverifiable = parts
+        .iter()
+        .filter(|p| !verify::supported(&p.filename))
+        .count();
+    if args.verify && unverifiable > 0 {
+        eprintln!("note: --verify only checks .tgz parts; {unverifiable} part(s) won't be checked");
+    }
 
     let multi = MultiProgress::new();
     let style = ProgressStyle::with_template(

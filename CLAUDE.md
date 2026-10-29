@@ -22,7 +22,8 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - `src/main.rs`: clap args, URL collection/dedupe, concurrency (`buffer_unordered`), progress bars, summary/exit code
 - `src/cookies.rs`: cookies.txt parser → `reqwest::cookie::Jar` (the jar handles domain matching across redirects)
 - `src/urls.rs`: `Part { url, filename }`, part expansion
-- `src/download.rs`: `Downloader`. Writes to `<file>.part` and resumes with `Range`. 206 appends, 200 restarts, 416 means already complete. Checks the size against `Content-Range`/`Content-Length`, then renames to the final name. Backoff retries for network errors, 5xx and 429; attempts that made progress don't use up the retry budget.
+- `src/download.rs`: `Downloader`. Writes to `<file>.part` and resumes with `Range` plus `If-Range` (the first response's strong ETag or Last-Modified, saved in `<file>.part.validator`). 206 appends, 200 restarts, 416 means complete only if `Content-Range: bytes */<total>` matches the `.part` size (otherwise it restarts). Checks the size against `Content-Range`/`Content-Length`, fsyncs, optionally runs `verify::gzip` (`--verify`; a failure moves the file to `<file>.corrupt`), then renames to the final name.
+- `src/verify.rs`: end-to-end gzip check (full decompress → CRC-32 + length). Backoff retries for network errors, 5xx and 429; attempts that made progress don't use up the retry budget.
 
 ## Git workflow
 - Claude never commits or pushes directly to `main`; all Claude changes reach `main` through a PR. (The user may commit to main directly. These rules and hooks apply only to Claude.)

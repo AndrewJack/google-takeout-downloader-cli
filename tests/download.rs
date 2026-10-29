@@ -165,3 +165,116 @@ async fn skips_existing_file() {
     let outcome = dl.download(&part, &ProgressBar::hidden()).await.unwrap();
     assert_eq!(outcome, Outcome::AlreadyPresent);
 }
+
+#[tokio::test]
+async fn resume_sends_if_range_and_cleans_up() {
+    let (server, dir, dl, part) = setup().await;
+    let validator = dir.path().join(format!("{FILE}.part.validator"));
+    std::fs::write(dir.path().join(format!("{FILE}.part")), &BODY[..4]).unwrap();
+    std::fs::write(&validator, "\"v1\"").unwrap();
+    Mock::given(method("GET"))
+        .and(header("range", "bytes=4-"))
+        .and(header("if-range", "\"v1\""))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 4-9/10")
+                .set_body_raw(&BODY[4..], "application/x-gzip"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+    assert!(!validator.exists());
+}
+
+#[tokio::test]
+async fn range_not_satisfiable_completes_part_of_matching_size() {
+    let (server, dir, dl, part) = setup().await;
+    std::fs::write(dir.path().join(format!("{FILE}.part")), BODY).unwrap();
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(416).insert_header("content-range", "bytes */10"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let outcome = dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert_eq!(outcome, Outcome::Downloaded);
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+}
+
+#[tokio::test]
+async fn oversized_part_restarts_from_scratch() {
+    let (server, dir, dl, part) = setup().await;
+    std::fs::write(dir.path().join(format!("{FILE}.part")), b"0123456789xx").unwrap();
+    Mock::given(method("GET"))
+        .and(header_exists("range"))
+        .respond_with(ResponseTemplate::new(416).insert_header("content-range", "bytes */10"))
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ok_body())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+}
+
+fn gzipped(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    enc.write_all(data).unwrap();
+    enc.finish().unwrap()
+}
+
+#[tokio::test]
+async fn verify_accepts_valid_gzip() {
+    let (server, dir, dl, part) = setup().await;
+    let body = gzipped(BODY);
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "application/x-gzip"))
+        .mount(&server)
+        .await;
+
+    let outcome = dl
+        .with_verify(true)
+        .download(&part, &ProgressBar::hidden())
+        .await
+        .unwrap();
+    assert_eq!(outcome, Outcome::Downloaded);
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), body);
+}
+
+#[tokio::test]
+async fn verify_moves_corrupt_file_aside_without_retry() {
+    let (server, dir, dl, part) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ok_body().insert_header("etag", "\"v1\""))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = dl
+        .with_verify(true)
+        .download(&part, &ProgressBar::hidden())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DownloadError::Corrupt { .. }), "{err:?}");
+    let corrupt = dir.path().join(format!("{FILE}.corrupt"));
+    assert_eq!(std::fs::read(corrupt).unwrap(), BODY);
+    for leftover in [
+        FILE.to_owned(),
+        format!("{FILE}.part"),
+        format!("{FILE}.part.validator"),
+    ] {
+        assert!(
+            !dir.path().join(&leftover).exists(),
+            "{leftover} left behind"
+        );
+    }
+}
