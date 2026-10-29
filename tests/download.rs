@@ -301,3 +301,118 @@ async fn resume_offset_does_not_inflate_speed() {
     // Only the 10 bytes actually transferred count towards the rate, not the 64 MiB on disk.
     assert!(pb.per_sec() < 1_000_000.0, "rate {} B/s", pb.per_sec());
 }
+
+/// `/download/FILE` redirects to `/storage/FILE`, like Takeout's link to its download host.
+async fn mount_redirect(server: &MockServer, times: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!("/download/{FILE}")))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/storage/{FILE}", server.uri())),
+        )
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn preauth_saves_redirect_target_and_downloads_from_it() {
+    let (server, dir, dl, part) = setup().await;
+    mount_redirect(&server, 1).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/storage/{FILE}")))
+        .and(header("range", "bytes=0-0"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 0-0/10")
+                .set_body_raw(&BODY[..1], "application/x-gzip"),
+        )
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/storage/{FILE}")))
+        .respond_with(ok_body())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    dl.resolve(&part).await.unwrap();
+    let link = dir.path().join(format!("{FILE}.part.url"));
+    assert_eq!(
+        std::fs::read_to_string(&link).unwrap(),
+        format!("{}/storage/{FILE}", server.uri())
+    );
+
+    dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+    assert!(!link.exists());
+}
+
+#[tokio::test]
+async fn preauth_login_redirect_is_auth_error() {
+    let (server, dir, dl, part) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "location",
+            "https://accounts.google.com/ServiceLogin?continue=x",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let err = dl.resolve(&part).await.unwrap_err();
+    assert!(matches!(err, DownloadError::Auth), "{err:?}");
+    assert!(!dir.path().join(format!("{FILE}.part.url")).exists());
+}
+
+#[tokio::test]
+async fn rejected_saved_link_falls_back_to_original() {
+    let (server, dir, dl, part) = setup().await;
+    let link = dir.path().join(format!("{FILE}.part.url"));
+    std::fs::write(&link, format!("{}/expired/{FILE}", server.uri())).unwrap();
+    Mock::given(method("GET"))
+        .and(path(format!("/expired/{FILE}")))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_redirect(&server, 1).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/storage/{FILE}")))
+        .respond_with(ok_body())
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+    assert!(!link.exists());
+}
+
+#[tokio::test]
+async fn resume_uses_saved_link() {
+    let (server, dir, dl, part) = setup().await;
+    std::fs::write(dir.path().join(format!("{FILE}.part")), &BODY[..4]).unwrap();
+    std::fs::write(
+        dir.path().join(format!("{FILE}.part.url")),
+        format!("{}/storage/{FILE}", server.uri()),
+    )
+    .unwrap();
+    mount_redirect(&server, 0).await;
+    Mock::given(method("GET"))
+        .and(path(format!("/storage/{FILE}")))
+        .and(header("range", "bytes=4-"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", "bytes 4-9/10")
+                .set_body_raw(&BODY[4..], "application/x-gzip"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+}

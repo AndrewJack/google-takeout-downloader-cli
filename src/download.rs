@@ -9,9 +9,10 @@ use indicatif::ProgressBar;
 use reqwest::header::{
     CONTENT_RANGE, CONTENT_TYPE, ETAG, HeaderMap, IF_RANGE, LAST_MODIFIED, LOCATION, RANGE,
 };
-use reqwest::{Client, StatusCode, redirect};
+use reqwest::{Client, Response, StatusCode, redirect};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
+use url::Url;
 
 use crate::urls::Part;
 use crate::verify;
@@ -53,6 +54,15 @@ impl DownloadError {
             Self::Auth | Self::Corrupt { .. } | Self::Io(_) => false,
             Self::Status(s) => s.is_server_error() || *s == StatusCode::TOO_MANY_REQUESTS,
             Self::Incomplete { .. } | Self::SizeMismatch { .. } | Self::Http(_) => true,
+        }
+    }
+
+    /// Whether a saved pre-authorised link was turned down, so the original link should be used.
+    fn rejects_link(&self) -> bool {
+        match self {
+            Self::Auth => true,
+            Self::Status(s) => matches!(s.as_u16(), 400 | 401 | 403 | 404 | 410),
+            _ => false,
         }
     }
 }
@@ -119,6 +129,43 @@ impl Downloader {
         self
     }
 
+    /// Pre-authorises a part: follows its link through Google's auth redirect now, while the
+    /// cookies are fresh, and saves where it lands in `<file>.part.url`. `download` then uses
+    /// that link, so a part that waits in the queue for hours doesn't need to auth again.
+    pub async fn resolve(&self, part: &Part) -> Result<(), DownloadError> {
+        if fs::try_exists(self.out_dir.join(&part.filename)).await? {
+            return Ok(());
+        }
+        // One byte is enough to see the redirects; the body is never read.
+        let resp = self
+            .client
+            .get(part.url.clone())
+            .header(RANGE, "bytes=0-0")
+            .send()
+            .await?;
+        check_redirect(&resp)?;
+        let status = resp.status();
+        if !status.is_success() && status != StatusCode::RANGE_NOT_SATISFIABLE {
+            return Err(DownloadError::Status(status));
+        }
+        if is_html(&resp) {
+            return Err(DownloadError::Auth);
+        }
+        let link = self.link_file(part);
+        if resp.url() == &part.url {
+            // No redirect: nothing worth saving.
+            remove_if_exists(&link).await
+        } else {
+            tracing::debug!(file = %part.filename, host = ?resp.url().host_str(), "pre-authorised");
+            fs::write(&link, resp.url().as_str()).await
+        }?;
+        Ok(())
+    }
+
+    fn link_file(&self, part: &Part) -> PathBuf {
+        self.out_dir.join(format!("{}.part.url", part.filename))
+    }
+
     pub async fn download(&self, part: &Part, pb: &ProgressBar) -> Result<Outcome, DownloadError> {
         let dest = self.out_dir.join(&part.filename);
         if fs::try_exists(&dest).await? {
@@ -128,11 +175,21 @@ impl Downloader {
         let validator = self
             .out_dir
             .join(format!("{}.part.validator", part.filename));
+        let link = self.link_file(part);
 
         let mut failures = 0;
         loop {
             let before = file_len(&tmp).await?;
-            match self.attempt(part, &tmp, &validator, pb).await {
+            let saved = read_if_exists(&link)
+                .await?
+                .and_then(|s| Url::parse(&s).ok());
+            let url = saved.as_ref().unwrap_or(&part.url);
+            match self.attempt(url, &tmp, &validator, pb).await {
+                Err(e) if saved.is_some() && e.rejects_link() => {
+                    // The pre-authorised link has expired; fall back to the original one.
+                    tracing::info!(file = %part.filename, error = %e, "saved link rejected");
+                    fs::remove_file(&link).await?;
+                }
                 Ok(()) => {
                     // On disk before it gets the final name, so a crash can't leave it truncated.
                     sync(&tmp).await?;
@@ -142,6 +199,7 @@ impl Downloader {
                     fs::rename(&tmp, &dest).await?;
                     sync(&self.out_dir).await?;
                     remove_if_exists(&validator).await?;
+                    remove_if_exists(&link).await?;
                     return Ok(Outcome::Downloaded);
                 }
                 Err(e) if e.retryable() && failures < self.retries => {
@@ -184,6 +242,7 @@ impl Downloader {
                 let bad = self.out_dir.join(format!("{}.corrupt", part.filename));
                 fs::rename(tmp, &bad).await?;
                 remove_if_exists(validator).await?;
+                remove_if_exists(&self.link_file(part)).await?;
                 Err(DownloadError::Corrupt {
                     path: bad,
                     source: e,
@@ -205,13 +264,13 @@ impl Downloader {
 
     async fn attempt(
         &self,
-        part: &Part,
+        url: &Url,
         tmp: &Path,
         validator: &Path,
         pb: &ProgressBar,
     ) -> Result<(), DownloadError> {
         let offset = file_len(tmp).await?;
-        let mut req = self.client.get(part.url.clone());
+        let mut req = self.client.get(url.clone());
         if offset > 0 {
             req = req.header(RANGE, format!("bytes={offset}-"));
             // Only resume if the file hasn't changed since the .part was started; otherwise the
@@ -222,19 +281,7 @@ impl Downloader {
         }
         let resp = req.send().await?;
         let status = resp.status();
-
-        if status.is_redirection() {
-            let to_login = resp
-                .headers()
-                .get(LOCATION)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|l| l.contains(LOGIN_HOST));
-            return Err(if to_login {
-                DownloadError::Auth
-            } else {
-                DownloadError::Status(status)
-            });
-        }
+        check_redirect(&resp)?;
         if status == StatusCode::RANGE_NOT_SATISFIABLE && offset > 0 {
             // Nothing left to fetch. That means the .part is complete only if it's exactly the
             // size the server reports (`bytes */<total>`); if it's bigger, start again.
@@ -256,12 +303,7 @@ impl Downloader {
         if !status.is_success() {
             return Err(DownloadError::Status(status));
         }
-        let is_html = resp
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|t| t.starts_with("text/html"));
-        if is_html {
+        if is_html(&resp) {
             return Err(DownloadError::Auth);
         }
 
@@ -322,6 +364,32 @@ impl Downloader {
             _ => Ok(()),
         }
     }
+}
+
+/// A redirect the client stopped at: the login page means the cookies didn't work.
+fn check_redirect(resp: &Response) -> Result<(), DownloadError> {
+    let status = resp.status();
+    if !status.is_redirection() {
+        return Ok(());
+    }
+    let to_login = resp
+        .headers()
+        .get(LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|l| l.contains(LOGIN_HOST));
+    Err(if to_login {
+        DownloadError::Auth
+    } else {
+        DownloadError::Status(status)
+    })
+}
+
+/// Google answers with an HTML sign-in page rather than the archive when auth fails.
+fn is_html(resp: &Response) -> bool {
+    resp.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("text/html"))
 }
 
 async fn file_len(path: &Path) -> std::io::Result<u64> {

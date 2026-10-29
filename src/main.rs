@@ -7,7 +7,7 @@ use clap::Parser;
 use futures_util::{StreamExt, stream};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use takeout_dl::cookies;
-use takeout_dl::download::{Downloader, Outcome};
+use takeout_dl::download::{DownloadError, Downloader, Outcome};
 use takeout_dl::urls::{self, Part};
 use takeout_dl::verify;
 
@@ -46,6 +46,11 @@ struct Args {
     #[arg(long)]
     verify: bool,
 
+    /// Don't authorise every part's link up front; follow each one only when its download starts.
+    /// Without pre-auth, parts that wait in the queue can find the login has lapsed.
+    #[arg(long)]
+    no_preauth: bool,
+
     /// Print the parts that would be downloaded and exit.
     #[arg(long)]
     dry_run: bool,
@@ -80,6 +85,45 @@ fn collect_parts(args: &Args) -> Result<Vec<Part>> {
     Ok(parts)
 }
 
+/// Follows every part's link through Google's auth now, while the cookies are fresh, so parts
+/// that start later don't depend on the login still being valid.
+async fn preauth(downloader: &Downloader, parts: &[Part]) -> Result<()> {
+    let pb = ProgressBar::new(parts.len() as u64).with_style(ProgressStyle::with_template(
+        "pre-authorising {pos}/{len} parts",
+    )?);
+    let results: Vec<(&Part, Result<(), DownloadError>)> = stream::iter(parts)
+        .map(|part| {
+            let pb = &pb;
+            async move {
+                let result = downloader.resolve(part).await;
+                pb.inc(1);
+                (part, result)
+            }
+        })
+        .buffer_unordered(PREAUTH_JOBS)
+        .collect()
+        .await;
+    pb.finish_and_clear();
+
+    // Nothing authorised: stop now rather than fail every part one by one.
+    if !results.is_empty()
+        && results
+            .iter()
+            .all(|(_, r)| matches!(r, Err(DownloadError::Auth)))
+    {
+        bail!("{}", DownloadError::Auth);
+    }
+    for (part, result) in &results {
+        if let Err(e) = result {
+            eprintln!("note: couldn't pre-authorise {}: {e}", part.filename);
+        }
+    }
+    Ok(())
+}
+
+/// Pre-auth requests are tiny; run more of them at once than downloads.
+const PREAUTH_JOBS: usize = 8;
+
 #[tokio::main]
 async fn main() -> Result<ExitCode> {
     tracing_subscriber::fmt()
@@ -111,6 +155,10 @@ async fn main() -> Result<ExitCode> {
         .count();
     if args.verify && unverifiable > 0 {
         eprintln!("note: --verify only checks .tgz parts; {unverifiable} part(s) won't be checked");
+    }
+
+    if !args.no_preauth {
+        preauth(&downloader, &parts).await?;
     }
 
     let multi = MultiProgress::new();

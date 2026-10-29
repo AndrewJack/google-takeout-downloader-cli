@@ -12,6 +12,7 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 - **Part expansion**: give the link to part 001 and `-p N`, and it works out the links for parts 002…N.
 - **Safe output**: a file only gets its final name once its size has been checked and it has been flushed to disk. Parts that already exist are skipped.
 - **Integrity check** (`--verify`): decompresses each `.tgz` part to check gzip's built-in checksum before giving it its final name.
+- **Pre-auth**: before downloading, it follows every part's link through Google's sign-in check while the cookies are fresh, so parts still waiting in the queue hours later can start without the login having lapsed (`--no-preauth` turns this off).
 - **Clear auth errors**: if Google sends a login page, it says so instead of saving HTML as a `.tgz`.
 
 ## Install
@@ -105,6 +106,7 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 | `-j, --jobs <N>` | `2` | Parts to download at the same time |
 | `--retries <N>` | `5` | Retries per part. Attempts that made progress don't count against this |
 | `--verify` | | Check each `.tgz` part end to end (gzip CRC) after it downloads. Adds up to a few minutes per 50 GB part. `.zip` parts aren't checked |
+| `--no-preauth` | | Don't authorise every part's link before downloading; follow each one when its download starts |
 | `--dry-run` | | Print the expanded part links and exit |
 
 `takeout-dl` exits non-zero if any part failed. Run it again to retry only the failed parts.
@@ -114,6 +116,7 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 **`not authenticated (Google sent a login page)`**
 - Cookies are missing or expired: export `cookies.txt` again.
 - Google may require a recent password check before downloads. Click one **Download** button in your browser, enter your password if asked, cancel the download, then export the cookies again.
+- If the first parts download and later ones fail, the login lapsed while they waited. Make sure pre-auth is on (no `--no-preauth`), then run again with fresh cookies.
 - Make sure the cookies come from the same Google account as the export (the `authuser`/`user` values in the link).
 
 **`failed integrity check (...); kept as <name>.corrupt`**: the downloaded part is damaged. Run the same command again to download it from scratch, then delete the `.corrupt` file.

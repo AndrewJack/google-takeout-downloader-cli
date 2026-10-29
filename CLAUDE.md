@@ -16,13 +16,14 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - Auth = browser cookies in Netscape `cookies.txt` format. Export with a "Get cookies.txt LOCALLY"-style extension while logged in on takeout.google.com.
 - Google may demand a recent password re-entry. If you get auth errors with fresh cookies, click one download link in the browser first, then re-export.
 - Links expire (~7 days after the export is created).
+- Pre-auth: before downloading, `main` calls `Downloader::resolve` on every part. It follows the link's redirects (`Range: bytes=0-0`, body not read) and saves the final URL to `<file>.part.url`. `download` uses that URL (including for resumes and retries), so queued parts don't need the login to still be valid. If the saved URL gets `Auth` or 400/401/403/404/410, it's deleted and the original link is used. `--no-preauth` skips the step.
 - Part URL pattern: the file name ends `-NNN.tgz` and the query has `i=N-1`. `urls::expand` generates parts from any starting part.
 
 ## Module map
 - `src/main.rs`: clap args, URL collection/dedupe, concurrency (`buffer_unordered`), progress bars, summary/exit code
 - `src/cookies.rs`: cookies.txt parser → `reqwest::cookie::Jar` (the jar handles domain matching across redirects)
 - `src/urls.rs`: `Part { url, filename }`, part expansion
-- `src/download.rs`: `Downloader`. Writes to `<file>.part` and resumes with `Range` plus `If-Range` (the first response's strong ETag or Last-Modified, saved in `<file>.part.validator`). 206 appends, 200 restarts, 416 means complete only if `Content-Range: bytes */<total>` matches the `.part` size (otherwise it restarts). Checks the size against `Content-Range`/`Content-Length`, fsyncs, optionally runs `verify::gzip` (`--verify`; a failure moves the file to `<file>.corrupt`), then renames to the final name.
+- `src/download.rs`: `Downloader`. Writes to `<file>.part` and resumes with `Range` plus `If-Range` (the first response's strong ETag or Last-Modified, saved in `<file>.part.validator`), requesting the pre-authorised `<file>.part.url` link when there is one. 206 appends, 200 restarts, 416 means complete only if `Content-Range: bytes */<total>` matches the `.part` size (otherwise it restarts). Checks the size against `Content-Range`/`Content-Length`, fsyncs, optionally runs `verify::gzip` (`--verify`; a failure moves the file to `<file>.corrupt`), then renames to the final name.
 - `src/verify.rs`: end-to-end gzip check (full decompress → CRC-32 + length). Backoff retries for network errors, 5xx and 429; attempts that made progress don't use up the retry budget.
 
 ## Git workflow
