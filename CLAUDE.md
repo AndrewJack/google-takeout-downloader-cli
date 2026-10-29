@@ -29,10 +29,10 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - Claude never commits or pushes directly to `main`; all Claude changes reach `main` through a PR. (The user may commit to main directly. These rules and hooks apply only to Claude.)
 - Start from an up-to-date main: `git switch main && git pull`, then `git switch -c <type>/<short-desc>` (e.g. `feat/zip-support`, `fix/resume-416`).
 - Commit on the branch, `git push -u origin <branch>`, then `gh pr create`.
-- PR checks (`.github/workflows/pr.yml`): fmt, clippy, and tests on Linux and macOS (Windows is not supported). Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` before pushing.
+- PR checks (`.github/workflows/pr.yml`): fmt, clippy and tests, all on macOS (Apple Silicon is the only supported platform). Run `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test` before pushing.
 - Merging is the user's call: don't merge PRs unless asked.
 - Enforcement:
-  - GitHub ruleset "protect main": PRs only, required checks (fmt + clippy, tests on Ubuntu and macOS), no force-push or deletion. Repo admins bypass it, so the user can still push to main; Claude's pushes to main are stopped by the local layers below.
+  - GitHub ruleset "protect main": PRs only, required checks (`checks / fmt + clippy`, `checks / test (macos-latest)`), no force-push or deletion. Repo admins bypass it, so the user can still push to main; Claude's pushes to main are stopped by the local layers below.
   - `.githooks/pre-commit` and `.githooks/pre-push` are the real guard. They only act when run from Claude Code: `CLAUDECODE=1` is set, or a `claude` process is an ancestor (`.githooks/is-claude.sh`; this still catches `env -i`). They do nothing in the user's own terminal. git hands `pre-push` the resolved destination refs, so aliases, `push.default` and upstream config can't get around it. Enable per clone with `git config core.hooksPath .githooks`; a SessionStart hook in `.claude/settings.json` does this automatically.
   - `.claude/hooks/protect-main.sh` (PreToolUse on Bash) is a best-effort early warning: it parses the command text, catches commit/push to main before they run, and blocks attempts to skip the git hooks (`--no-verify`, `commit -n`, overriding `core.hooksPath`, touching `CLAUDECODE`).
   - Never bypass either layer. If a hook blocks legitimate work, ask the user.
