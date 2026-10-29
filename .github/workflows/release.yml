@@ -115,20 +115,20 @@ jobs:
           SHA: ${{ github.sha }}
         run: gh release create "$TAG" dist/* --target "$SHA" --title "$TAG" --generate-notes
 
-  # Commits Formula/takeout-dl.rb pointing at the new release straight to main. GitHub Actions is a
-  # bypass actor in the "protect main" ruleset for this. A push made with GITHUB_TOKEN doesn't
-  # trigger other workflows.
+  # Commits Formula/takeout-dl.rb pointing at the new release straight to main. It pushes with the
+  # HOMEBREW_DEPLOY_KEY deploy key, the only bypass actor besides admins in the "protect main"
+  # ruleset (personal repos can't make GitHub Actions itself a bypass actor). Pushes don't touch
+  # Cargo.toml, so they don't start another release.
   homebrew:
     name: update Homebrew formula
     needs: [detect, publish]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       # Check out main rather than the release commit, so the push still applies if main has moved on.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          ssh-key: ${{ secrets.HOMEBREW_DEPLOY_KEY }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ env.TARGET }}
