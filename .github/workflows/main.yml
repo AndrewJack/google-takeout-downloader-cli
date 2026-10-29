@@ -1,0 +1,15 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-${{ github.sha }}
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
