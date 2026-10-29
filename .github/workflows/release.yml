@@ -1,13 +1,19 @@
 name: Release
 
+# Merging a PR that bumps `version` in Cargo.toml publishes vX.Y.Z with generated notes.
+# Run it manually (Actions tab) to retry a release whose build failed.
+# Build and publish live in one workflow because a release created with GITHUB_TOKEN
+# doesn't trigger other workflows.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-# One release at a time: a newer release waits for the running one instead of cancelling it.
+# One release at a time: a newer run waits for the running one instead of cancelling it.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -16,12 +22,44 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  detect:
+    name: detect version bump
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Releasing whenever no release exists for the current version (rather than diffing the
+      # previous commit) also covers retries after a failed build.
+      - id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo.toml version '$version' is not X.Y.Z"
+            exit 1
+          fi
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing $tag."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   checks:
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
     uses: ./.github/workflows/checks.yml
 
   build:
     name: build (${{ matrix.target }})
-    needs: checks
+    needs: [detect, checks]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -42,23 +80,12 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Check tag matches Cargo.toml version
-        shell: bash
-        env:
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          version=$(cargo pkgid | sed 's/.*[#@]//')
-          if [ "${TAG#v}" != "$version" ]; then
-            echo "::error::Release tag $TAG does not match Cargo.toml version $version"
-            exit 1
-          fi
-
       - run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ needs.detect.outputs.tag }}
           TARGET: ${{ matrix.target }}
         run: |
           name="takeout-dl-${TAG}-${TARGET}"
@@ -82,9 +109,10 @@ jobs:
           if-no-files-found: error
 
   # Only this job gets write access, and it runs no third-party actions or build code.
+  # It creates the tag too, so a failed build leaves no tag or partial release behind.
   publish:
-    name: upload release assets
-    needs: build
+    name: create release
+    needs: [detect, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -93,9 +121,10 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Upload to release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG" dist/* --clobber
+          TAG: ${{ needs.detect.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: gh release create "$TAG" dist/* --target "$SHA" --title "$TAG" --generate-notes

@@ -35,7 +35,7 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
   - `.githooks/pre-commit` and `.githooks/pre-push` are the real guard. They only act when run from Claude Code: `CLAUDECODE=1` is set, or a `claude` process is an ancestor (`.githooks/is-claude.sh`; this still catches `env -i`). They do nothing in the user's own terminal. git hands `pre-push` the resolved destination refs, so aliases, `push.default` and upstream config can't get around it. Enable per clone with `git config core.hooksPath .githooks`; a SessionStart hook in `.claude/settings.json` does this automatically.
   - `.claude/hooks/protect-main.sh` (PreToolUse on Bash) is a best-effort early warning: it parses the command text, catches commit/push to main before they run, and blocks attempts to skip the git hooks (`--no-verify`, `commit -n`, overriding `core.hooksPath`, touching `CLAUDECODE`).
   - Never bypass either layer. If a hook blocks legitimate work, ask the user.
-- Releases: bump `version` in `Cargo.toml` via PR, merge, then `gh release create vX.Y.Z --generate-notes`. The tag must match the Cargo version or the release workflow fails.
+- Releases: bump `version` in `Cargo.toml` via PR. Merging it runs `.github/workflows/release.yml`, which builds all targets and creates the `vX.Y.Z` tag and release with generated notes (only if that release doesn't exist yet). Don't create tags or releases by hand. Re-run the workflow from the Actions tab to retry a failed release.
 
 ## Conventions
 - `thiserror` enums in library modules, `anyhow` only in `main.rs`.
