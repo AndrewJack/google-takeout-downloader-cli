@@ -79,6 +79,10 @@ impl Downloader {
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(120))
+            // Google serves HTTP/2, so parallel parts share one connection. hyper's fixed
+            // 2 MiB stream window caps each part at ~window/RTT (~19 MiB/s at 100 ms);
+            // adaptive windows grow to the measured bandwidth-delay product instead.
+            .http2_adaptive_window(true)
             .build()?;
         Ok(Self {
             client,
