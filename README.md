@@ -16,7 +16,7 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 
 ## Install
 
-Release builds are for macOS on Apple Silicon. On other platforms, build from source.
+`takeout-dl` supports macOS on Apple Silicon. It may build elsewhere from source, but other platforms aren't tested.
 
 ### Homebrew (macOS, Apple Silicon)
 

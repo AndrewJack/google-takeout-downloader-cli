@@ -1,6 +1,7 @@
 name: Checks
 
 # Shared by pr.yml and main.yml so both run identical checks.
+# Only macOS on Apple Silicon is supported (macos-latest runners are arm64).
 on:
   workflow_call:
 
@@ -14,7 +15,7 @@ env:
 jobs:
   lint:
     name: fmt + clippy
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Runners ship rustup; this installs the version pinned in rust-toolchain.toml.
@@ -24,12 +25,9 @@ jobs:
       - run: cargo clippy --all-targets --locked
 
   test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    # The job names are required checks in the "protect main" ruleset; rename them there too.
+    name: test (macos-latest)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install --no-self-update
