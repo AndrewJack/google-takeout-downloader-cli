@@ -7,7 +7,7 @@ use clap::Parser;
 use futures_util::{StreamExt, stream};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use takeout_dl::cookies;
-use takeout_dl::download::{Downloader, Outcome};
+use takeout_dl::download::{DEFAULT_TRICKLE_RATE, Downloader, Outcome, Queue, Turn};
 use takeout_dl::urls::{self, Part};
 use takeout_dl::verify;
 
@@ -34,9 +34,15 @@ struct Args {
     #[arg(short, long, default_value = ".")]
     out_dir: PathBuf,
 
-    /// Parts to download concurrently.
+    /// Parts to download at full speed at the same time.
     #[arg(short, long, default_value_t = 2)]
     jobs: usize,
+
+    /// KiB/s for each part waiting for its turn. Every part starts at once so it passes
+    /// Google's login check while the cookies are fresh. 0 makes waiting parts not start until
+    /// their turn, which can fail if the login lapses in the meantime.
+    #[arg(long, default_value_t = DEFAULT_TRICKLE_RATE / 1024)]
+    trickle_rate: u64,
 
     /// Retries per part after failures that made no progress.
     #[arg(long, default_value_t = 5)]
@@ -103,8 +109,12 @@ async fn main() -> Result<ExitCode> {
     let jar = cookies::load(cookie_path)?;
     std::fs::create_dir_all(&args.out_dir)
         .with_context(|| format!("creating {}", args.out_dir.display()))?;
-    let downloader =
-        Downloader::new(jar, args.out_dir.clone(), args.retries)?.with_verify(args.verify);
+    let downloader = Downloader::new(jar, args.out_dir.clone(), args.retries)?
+        .with_verify(args.verify)
+        .with_trickle_rate(args.trickle_rate.saturating_mul(1024));
+    let jobs = args.jobs.max(1);
+    let trickle = args.trickle_rate > 0;
+    let queue = Queue::new(jobs);
     let unverifiable = parts
         .iter()
         .filter(|p| !verify::supported(&p.filename))
@@ -126,14 +136,16 @@ async fn main() -> Result<ExitCode> {
             let pb = multi.add(ProgressBar::new(0).with_style(style.clone()));
             pb.set_prefix(part.filename.clone());
             let (downloader, overall) = (&downloader, &overall);
+            let turn = if trickle { queue.join() } else { Turn::now() };
             async move {
-                let result = downloader.download(part, &pb).await;
+                let result = downloader.download_queued(part, &pb, turn).await;
                 pb.finish_and_clear();
                 overall.inc(1);
                 (part.filename.clone(), result)
             }
         })
-        .buffer_unordered(args.jobs.max(1))
+        // With trickling, every part runs at once and `queue` limits the full-speed ones.
+        .buffer_unordered(if trickle { parts.len().max(1) } else { jobs })
         .collect()
         .await;
     overall.finish_and_clear();

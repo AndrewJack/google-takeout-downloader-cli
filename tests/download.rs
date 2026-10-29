@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use indicatif::ProgressBar;
 use takeout_dl::cookies;
-use takeout_dl::download::{DownloadError, Downloader, Outcome};
+
+use takeout_dl::download::{DownloadError, Downloader, Outcome, Queue};
 use takeout_dl::urls::Part;
 use tempfile::TempDir;
 use url::Url;
@@ -300,4 +301,100 @@ async fn resume_offset_does_not_inflate_speed() {
     dl.download(&part, &pb).await.unwrap();
     // Only the 10 bytes actually transferred count towards the rate, not the 64 MiB on disk.
     assert!(pb.per_sec() < 1_000_000.0, "rate {} B/s", pb.per_sec());
+}
+
+#[tokio::test]
+async fn queued_part_starts_at_once_then_speeds_up_when_its_turn_comes() {
+    let (server, dir, dl, part) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ok_body())
+        .expect(1)
+        .mount(&server)
+        .await;
+    // At 1 B/s the 10-byte body would take 10 s to trickle.
+    let dl = dl.with_trickle_rate(1);
+    let queue = Queue::new(1);
+    let ahead = queue.join();
+    let pb = ProgressBar::hidden();
+    let started = std::time::Instant::now();
+
+    let (result, ()) = tokio::join!(dl.download_queued(&part, &pb, queue.join()), async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The request went out before the part had a slot.
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert!(!dir.path().join(FILE).exists());
+        drop(ahead);
+    });
+    assert_eq!(result.unwrap(), Outcome::Downloaded);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+}
+
+#[tokio::test]
+async fn queued_part_finishes_by_trickling_if_its_turn_never_comes() {
+    let (server, dir, dl, part) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ok_body())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let queue = Queue::new(1);
+    let _ahead = queue.join();
+
+    let outcome = dl
+        .download_queued(&part, &ProgressBar::hidden(), queue.join())
+        .await
+        .unwrap();
+    assert_eq!(outcome, Outcome::Downloaded);
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), BODY);
+}
+
+#[tokio::test]
+async fn slots_go_to_parts_in_queue_order() {
+    let (server, _dir, dl, part) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ok_body())
+        .mount(&server)
+        .await;
+    // At 1 B/s neither part can finish by trickling within the test.
+    let dl = dl.with_trickle_rate(1);
+    let pb = ProgressBar::hidden();
+    let later = Part::from_url(
+        Url::parse(&format!("{}/download/takeout-1-002.tgz?i=1", server.uri())).unwrap(),
+    )
+    .unwrap();
+    let queue = Queue::new(1);
+    let ahead = queue.join();
+    let (first, second) = (queue.join(), queue.join());
+    let done = std::sync::Mutex::new(Vec::new());
+    let run = |name: &'static str, p, turn, delay| {
+        let (dl, pb, done) = (&dl, &pb, &done);
+        async move {
+            tokio::time::sleep(delay).await;
+            dl.download_queued(p, pb, turn).await.unwrap();
+            done.lock().unwrap().push(name);
+        }
+    };
+
+    let started = std::time::Instant::now();
+    tokio::join!(
+        // The second part's download starts first, but its place in the queue is still second.
+        run("second", &later, second, Duration::ZERO),
+        run("first", &part, first, Duration::from_millis(50)),
+        async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(ahead);
+        }
+    );
+    // One slot: the first part used it, then handed it to the second.
+    assert_eq!(*done.lock().unwrap(), ["first", "second"]);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }

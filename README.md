@@ -8,7 +8,8 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 
 - **Resume**: partial downloads are kept as `<name>.part` and continue where they stopped, including after Ctrl-C. If Google's copy of the file has changed since the `.part` was started, it restarts instead of joining two different files.
 - **Retries**: network errors, 5xx and 429 responses are retried with exponential backoff.
-- **Parallel**: downloads several parts at once (`-j`).
+- **Parallel**: downloads several parts at full speed at once (`-j`).
+- **No lapsed logins for queued parts**: Google only checks your login when a download starts. So every part starts straight away, and parts waiting for their turn download slowly (`--trickle-rate`, 64 KiB/s each by default) until a full-speed slot frees up. That way a part that waits hours in the queue doesn't fail because the cookies stopped working.
 - **Part expansion**: give the link to part 001 and `-p N`, and it works out the links for parts 002…N.
 - **Safe output**: a file only gets its final name once its size has been checked and it has been flushed to disk. Parts that already exist are skipped.
 - **Integrity check** (`--verify`): decompresses each `.tgz` part to check gzip's built-in checksum before giving it its final name.
@@ -102,7 +103,8 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 | `-p, --parts <N>` | | Total parts to download, counting from each given link's part number |
 | `-c, --cookies <FILE>` | required | Netscape-format `cookies.txt` |
 | `-o, --out-dir <DIR>` | `.` | Where to save the archives |
-| `-j, --jobs <N>` | `2` | Parts to download at the same time |
+| `-j, --jobs <N>` | `2` | Parts to download at full speed at the same time |
+| `--trickle-rate <KIB/S>` | `64` | Speed of each part waiting for its turn. `0` makes waiting parts not start until their turn, which can fail if the login lapses in the meantime |
 | `--retries <N>` | `5` | Retries per part. Attempts that made progress don't count against this |
 | `--verify` | | Check each `.tgz` part end to end (gzip CRC) after it downloads. Adds up to a few minutes per 50 GB part. `.zip` parts aren't checked |
 | `--dry-run` | | Print the expanded part links and exit |
@@ -114,6 +116,7 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 **`not authenticated (Google sent a login page)`**
 - Cookies are missing or expired: export `cookies.txt` again.
 - Google may require a recent password check before downloads. Click one **Download** button in your browser, enter your password if asked, cancel the download, then export the cookies again.
+- If the first parts download and later ones fail, the login lapsed before those parts started. Don't use `--trickle-rate 0`, and run again with fresh cookies.
 - Make sure the cookies come from the same Google account as the export (the `authuser`/`user` values in the link).
 
 **`failed integrity check (...); kept as <name>.corrupt`**: the downloaded part is damaged. Run the same command again to download it from scratch, then delete the `.corrupt` file.
