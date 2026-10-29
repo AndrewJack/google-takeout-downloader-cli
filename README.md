@@ -16,15 +16,30 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 
 ## Install
 
-Requires a Rust toolchain ([rustup.rs](https://rustup.rs)).
+Release builds are for macOS on Apple Silicon. On other platforms, build from source.
+
+### Homebrew (macOS, Apple Silicon)
 
 ```sh
-git clone git@github.com:AndrewJack/google-takeout-downloader-cli.git
+brew tap andrewjack/takeout-dl https://github.com/AndrewJack/google-takeout-downloader-cli
+brew install takeout-dl
+```
+
+Upgrade later with `brew update && brew upgrade takeout-dl`.
+
+### From source
+
+Requires a Rust toolchain ([rustup.rs](https://rustup.rs)). The repo pins the Rust version in `rust-toolchain.toml`, and rustup installs it on first build.
+
+```sh
+git clone https://github.com/AndrewJack/google-takeout-downloader-cli.git
 cd google-takeout-downloader-cli
 cargo install --path .
 ```
 
-This installs the `takeout-dl` binary into `~/.cargo/bin`.
+This installs the `takeout-dl` binary into `~/.cargo/bin`. To update, `git pull` and run `cargo install --path .` again.
+
+Check it works with `takeout-dl --version`.
 
 ## Usage
 
