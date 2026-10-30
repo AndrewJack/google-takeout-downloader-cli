@@ -9,6 +9,7 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 - **Resume**: partial downloads are kept as `<name>.part` and continue where they stopped, including after Ctrl-C. If Google's copy of the file has changed since the `.part` was started, it restarts instead of joining two different files.
 - **Retries**: network errors, 5xx and 429 responses are retried with exponential backoff.
 - **Parallel**: downloads several parts at full speed at once (`-j`).
+- **Bandwidth cap** (`--limit-rate`): keeps the total speed of all parts under a limit, e.g. `--limit-rate 5M`, so the rest of your network stays usable. `-j` still decides how many parts run at full speed; they share the cap.
 - **No lapsed logins for queued parts**: Google only checks your login when a download starts. So every part starts straight away, and parts waiting for their turn download slowly (`--trickle-rate`, 64 KiB/s each by default) until a full-speed slot frees up. That way a part that waits hours in the queue doesn't fail because the cookies stopped working.
 - **Part expansion**: give the link to part 001 and `-p N`, and it works out the links for parts 002…N. Use `--from`/`--to` to download only some of them.
 - **Safe output**: a file only gets its final name once its size has been checked and it has been flushed to disk. Parts that already exist are skipped.
@@ -110,6 +111,7 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 | `-o, --out-dir <DIR>` | `.` | Where to save the archives |
 | `-j, --jobs <N>` | `2` | Parts to download at full speed at the same time |
 | `--trickle-rate <KIB/S>` | `64` | Speed of each part waiting for its turn. `0` makes waiting parts not start until their turn, which can fail if the login lapses in the meantime |
+| `--limit-rate <RATE>` | no cap | Total speed of all parts together, in bytes per second with an optional `K`, `M` or `G` suffix (e.g. `5M`, `800K`). Waiting parts' trickles count towards it. `0` = no cap |
 | `--retries <N>` | `5` | Retries per part. Attempts that made progress don't count against this |
 | `--verify` | | Check each `.tgz` part end to end (gzip CRC) after it downloads. Adds up to a few minutes per 50 GB part. `.zip` parts aren't checked |
 | `--dry-run` | | Print the expanded part links and exit |

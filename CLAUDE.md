@@ -18,6 +18,7 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - Links expire (~7 days after the export is created).
 - Login is checked only when a request starts; a running download keeps going after the cookies lapse. `takeout-download.usercontent.google.com` links serve the file directly (no redirect, no Set-Cookie), so there's no auth-free URL to save.
 - Queue: every part starts at once (`download::Queue`, tickets in part order). The first `-j` unfinished parts download at full speed; the rest trickle at `--trickle-rate` KiB/s until they get a slot. Each part has its own `Client`/connection, because slow streams sharing an HTTP/2 connection would hold its flow-control window and stall the fast ones. `--trickle-rate 0` = old behaviour (`buffer_unordered(jobs)`).
+- Bandwidth cap: `--limit-rate` (bytes/s, `K`/`M`/`G` suffixes) is one `limit::RateLimiter` shared by every part, trickles included. It only delays reading chunks; `-j` and the queue still decide which parts run at full speed.
 - Part URL pattern: the file name ends `-NNN.tgz` and the query has `i=N-1`. `urls::expand` generates parts from any part's URL, selected by `urls::Range` (`-p`, `--from`, `--to`).
 
 ## Module map
@@ -25,6 +26,7 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - `src/cookies.rs`: cookies.txt parser → `reqwest::cookie::Jar` (the jar handles domain matching across redirects)
 - `src/urls.rs`: `Part { url, filename }`, part expansion
 - `src/download.rs`: `Downloader`. Writes to `<file>.part` and resumes with `Range` plus `If-Range` (the first response's strong ETag or Last-Modified, saved in `<file>.part.validator`). 206 appends, 200 restarts, 416 means complete only if `Content-Range: bytes */<total>` matches the `.part` size (otherwise it restarts). Checks the size against `Content-Range`/`Content-Length`, fsyncs, optionally runs `verify::gzip` (`--verify`; a failure moves the file to `<file>.corrupt`), then renames to the final name.
+- `src/limit.rs`: `parse_rate` and `RateLimiter` (shared total-speed cap; `consume` sleeps to keep all parts under the rate, with a 250 ms burst allowance)
 - `src/verify.rs`: end-to-end gzip check (full decompress → CRC-32 + length). Backoff retries for network errors, 5xx and 429; attempts that made progress don't use up the retry budget.
 
 ## Git workflow

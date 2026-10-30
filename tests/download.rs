@@ -398,3 +398,86 @@ async fn slots_go_to_parts_in_queue_order() {
         started.elapsed()
     );
 }
+
+fn part_named(server: &MockServer, file: &str, i: u32) -> Part {
+    Part::from_url(Url::parse(&format!("{}/download/{file}?i={i}", server.uri())).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn limit_rate_caps_total_speed_across_parts() {
+    let (server, dir, dl, part) = setup().await;
+    let body = vec![7u8; 256 * 1024];
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "application/x-gzip"))
+        .mount(&server)
+        .await;
+    let dl = dl.with_limit_rate(256 * 1024);
+    let other = part_named(&server, "takeout-1-002.tgz", 1);
+    let (pb1, pb2) = (ProgressBar::hidden(), ProgressBar::hidden());
+    let started = std::time::Instant::now();
+
+    let (a, b) = tokio::join!(dl.download(&part, &pb1), dl.download(&other, &pb2));
+    assert_eq!(a.unwrap(), Outcome::Downloaded);
+    assert_eq!(b.unwrap(), Outcome::Downloaded);
+    // 512 KiB in total at 256 KiB/s: about 2 s (less the short burst allowance), not instant.
+    let took = started.elapsed();
+    assert!(took >= Duration::from_millis(1500), "{took:?}");
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), body);
+    assert_eq!(
+        std::fs::read(dir.path().join("takeout-1-002.tgz")).unwrap(),
+        body
+    );
+}
+
+#[tokio::test]
+async fn limit_rate_zero_means_no_cap() {
+    let (server, dir, dl, part) = setup().await;
+    let body = vec![7u8; 256 * 1024];
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.clone(), "application/x-gzip"))
+        .mount(&server)
+        .await;
+    let dl = dl.with_limit_rate(0);
+    let started = std::time::Instant::now();
+    dl.download(&part, &ProgressBar::hidden()).await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(std::fs::read(dir.path().join(FILE)).unwrap(), body);
+}
+
+#[tokio::test]
+async fn limit_rate_keeps_slot_order() {
+    let (server, _dir, dl, part) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ok_body())
+        .mount(&server)
+        .await;
+    // The cap is generous for 10-byte bodies; the slots still decide who goes first.
+    let dl = dl.with_trickle_rate(1).with_limit_rate(1024 * 1024);
+    let pb = ProgressBar::hidden();
+    let later = part_named(&server, "takeout-1-002.tgz", 1);
+    let queue = Queue::new(1);
+    let ahead = queue.join();
+    let (first, second) = (queue.join(), queue.join());
+    let done = std::sync::Mutex::new(Vec::new());
+    let run = |name: &'static str, p, turn| {
+        let (dl, pb, done) = (&dl, &pb, &done);
+        async move {
+            dl.download_queued(p, pb, turn).await.unwrap();
+            done.lock().unwrap().push(name);
+        }
+    };
+
+    tokio::join!(
+        run("second", &later, second),
+        run("first", &part, first),
+        async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(ahead);
+        }
+    );
+    assert_eq!(*done.lock().unwrap(), ["first", "second"]);
+}
