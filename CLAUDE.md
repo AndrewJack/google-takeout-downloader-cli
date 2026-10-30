@@ -18,7 +18,7 @@ Rust CLI that downloads Google Takeout archives (multi-part `.tgz`/`.zip`, up to
 - Links expire (~7 days after the export is created).
 - Login is checked only when a request starts; a running download keeps going after the cookies lapse. `takeout-download.usercontent.google.com` links serve the file directly (no redirect, no Set-Cookie), so there's no auth-free URL to save.
 - Queue: every part starts at once (`download::Queue`, tickets in part order). The first `-j` unfinished parts download at full speed; the rest trickle at `--trickle-rate` KiB/s until they get a slot. Each part has its own `Client`/connection, because slow streams sharing an HTTP/2 connection would hold its flow-control window and stall the fast ones. `--trickle-rate 0` = old behaviour (`buffer_unordered(jobs)`).
-- Part URL pattern: the file name ends `-NNN.tgz` and the query has `i=N-1`. `urls::expand` generates parts from any starting part.
+- Part URL pattern: the file name ends `-NNN.tgz` and the query has `i=N-1`. `urls::expand` generates parts from any part's URL, selected by `urls::Range` (`-p`, `--from`, `--to`).
 
 ## Module map
 - `src/main.rs`: clap args, URL collection/dedupe, concurrency (`buffer_unordered` + `Queue`), progress bars, summary/exit code
