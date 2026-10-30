@@ -26,6 +26,14 @@ struct Args {
     #[arg(short, long)]
     parts: Option<u32>,
 
+    /// First part number to download (default: the URL's own part).
+    #[arg(long, value_name = "N")]
+    from: Option<u32>,
+
+    /// Last part number to download, inclusive. Use instead of --parts.
+    #[arg(long, value_name = "N", conflicts_with = "parts")]
+    to: Option<u32>,
+
     /// Netscape-format cookies.txt exported from a browser logged in to Google.
     #[arg(short, long, required_unless_present = "dry_run")]
     cookies: Option<PathBuf>,
@@ -74,10 +82,15 @@ fn collect_parts(args: &Args) -> Result<Vec<Part>> {
         bail!("no URLs given (pass them as arguments or via --url-file)");
     }
 
+    let range = urls::Range {
+        parts: args.parts,
+        from: args.from,
+        to: args.to,
+    };
     let mut seen = HashSet::new();
     let mut parts = Vec::new();
     for url in &raw {
-        for part in urls::expand(url, args.parts)? {
+        for part in urls::expand(url, &range)? {
             if seen.insert(part.filename.clone()) {
                 parts.push(part);
             }

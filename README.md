@@ -10,7 +10,7 @@ Takeout exports are split into many large parts (up to 50GB each), and browser d
 - **Retries**: network errors, 5xx and 429 responses are retried with exponential backoff.
 - **Parallel**: downloads several parts at full speed at once (`-j`).
 - **No lapsed logins for queued parts**: Google only checks your login when a download starts. So every part starts straight away, and parts waiting for their turn download slowly (`--trickle-rate`, 64 KiB/s each by default) until a full-speed slot frees up. That way a part that waits hours in the queue doesn't fail because the cookies stopped working.
-- **Part expansion**: give the link to part 001 and `-p N`, and it works out the links for parts 002…N.
+- **Part expansion**: give the link to part 001 and `-p N`, and it works out the links for parts 002…N. Use `--from`/`--to` to download only some of them.
 - **Safe output**: a file only gets its final name once its size has been checked and it has been flushed to disk. Parts that already exist are skipped.
 - **Integrity check** (`--verify`): decompresses each `.tgz` part to check gzip's built-in checksum before giving it its final name.
 - **Clear auth errors**: if Google sends a login page, it says so instead of saving HTML as a `.tgz`.
@@ -81,8 +81,11 @@ If the download is interrupted, run the same command again. Finished parts are s
 ### More examples
 
 ```sh
-# Download parts 6-10 only (start from the part 006 link)
-takeout-dl -c cookies.txt -p 5 'https://...-006.tgz?...&i=5&...'
+# Download parts 6-10 only (any part's link works, e.g. part 001)
+takeout-dl -c cookies.txt --from 6 --to 10 'https://...-001.tgz?...'
+
+# Parts 6 to the end of a 20-part export
+takeout-dl -c cookies.txt -p 20 --from 6 'https://...-001.tgz?...'
 
 # Read links from a file (one per line, # comments allowed)
 takeout-dl -c cookies.txt --url-file links.txt
@@ -101,6 +104,8 @@ RUST_LOG=takeout_dl=debug takeout-dl -c cookies.txt '<url>'
 | `[URLS]...` | | One or more Takeout download links |
 | `--url-file <FILE>` | | File with one link per line |
 | `-p, --parts <N>` | | Total parts to download, counting from each given link's part number |
+| `--from <N>` | link's part | First part number to download |
+| `--to <N>` | | Last part number to download (inclusive). Can't be combined with `-p` |
 | `-c, --cookies <FILE>` | required | Netscape-format `cookies.txt` |
 | `-o, --out-dir <DIR>` | `.` | Where to save the archives |
 | `-j, --jobs <N>` | `2` | Parts to download at full speed at the same time |
