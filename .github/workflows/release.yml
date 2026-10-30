@@ -118,7 +118,8 @@ jobs:
   # Commits Formula/takeout-dl.rb pointing at the new release straight to main. It pushes with the
   # HOMEBREW_DEPLOY_KEY deploy key, the only bypass actor besides admins in the "protect main"
   # ruleset (personal repos can't make GitHub Actions itself a bypass actor). Pushes don't touch
-  # Cargo.toml, so they don't start another release.
+  # Cargo.toml, so they don't start another release, and the commit message has [ci skip] so
+  # main.yml doesn't rerun the checks for a formula-only change.
   # The key is stored in the `homebrew` environment, which only main can deploy to, so workflows
   # running on other branches can't read it.
   homebrew:
@@ -150,5 +151,5 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Update Homebrew formula to $TAG"
+          git commit -am "Update Homebrew formula to $TAG [ci skip]"
           git push origin HEAD:main
