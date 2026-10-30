@@ -5,9 +5,10 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use futures_util::{StreamExt, stream};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{HumanBytes, MultiProgress, ProgressBar, ProgressStyle};
 use takeout_dl::cookies;
 use takeout_dl::download::{DEFAULT_TRICKLE_RATE, Downloader, Outcome, Queue, Turn};
+use takeout_dl::limit;
 use takeout_dl::urls::{self, Part};
 use takeout_dl::verify;
 
@@ -51,6 +52,11 @@ struct Args {
     /// their turn, which can fail if the login lapses in the meantime.
     #[arg(long, default_value_t = DEFAULT_TRICKLE_RATE / 1024)]
     trickle_rate: u64,
+
+    /// Cap on the total download speed of all parts together, in bytes per second with an
+    /// optional K, M or G suffix (e.g. 5M, 800K). Trickling parts count towards it. 0 = no cap.
+    #[arg(long, value_name = "RATE", value_parser = limit::parse_rate)]
+    limit_rate: Option<u64>,
 
     /// Retries per part after failures that made no progress.
     #[arg(long, default_value_t = 5)]
@@ -124,9 +130,24 @@ async fn main() -> Result<ExitCode> {
         .with_context(|| format!("creating {}", args.out_dir.display()))?;
     let downloader = Downloader::new(jar, args.out_dir.clone(), args.retries)?
         .with_verify(args.verify)
-        .with_trickle_rate(args.trickle_rate.saturating_mul(1024));
+        .with_trickle_rate(args.trickle_rate.saturating_mul(1024))
+        .with_limit_rate(args.limit_rate.unwrap_or(0));
     let jobs = args.jobs.max(1);
     let trickle = args.trickle_rate > 0;
+    if let Some(cap) = args.limit_rate.filter(|&c| c > 0)
+        && trickle
+    {
+        let waiting = parts.len().saturating_sub(jobs) as u64;
+        let trickling = waiting.saturating_mul(args.trickle_rate.saturating_mul(1024));
+        if trickling >= cap / 2 {
+            eprintln!(
+                "note: {waiting} waiting part(s) can trickle at up to {}/s of the {}/s limit; \
+                 lower --trickle-rate to leave more for the full-speed parts",
+                HumanBytes(trickling),
+                HumanBytes(cap)
+            );
+        }
+    }
     let queue = Queue::new(jobs);
     let unverifiable = parts
         .iter()

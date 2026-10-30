@@ -16,6 +16,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::watch;
 
+use crate::limit::RateLimiter;
 use crate::urls::Part;
 use crate::verify;
 
@@ -178,6 +179,7 @@ pub struct Downloader {
     base_backoff: Duration,
     verify: bool,
     trickle_rate: u64,
+    limit: Option<Arc<RateLimiter>>,
 }
 
 impl Downloader {
@@ -195,12 +197,20 @@ impl Downloader {
             base_backoff: Duration::from_secs(1),
             verify: false,
             trickle_rate: DEFAULT_TRICKLE_RATE,
+            limit: None,
         })
     }
 
     /// Bytes per second for parts waiting for their turn (minimum 1).
     pub fn with_trickle_rate(mut self, bytes_per_sec: u64) -> Self {
         self.trickle_rate = bytes_per_sec.max(1);
+        self
+    }
+
+    /// Caps the total speed of every part this downloader runs, in bytes per second
+    /// (0 = no cap). Parts that are trickling count towards it too.
+    pub fn with_limit_rate(mut self, bytes_per_sec: u64) -> Self {
+        self.limit = (bytes_per_sec > 0).then(|| Arc::new(RateLimiter::new(bytes_per_sec)));
         self
     }
 
@@ -421,6 +431,9 @@ impl Downloader {
                 writer.write_all(&chunk).await?;
                 written += chunk.len() as u64;
                 pb.set_position(written);
+                if let Some(limit) = &self.limit {
+                    limit.consume(chunk.len()).await;
+                }
                 if !turn.has_slot() {
                     // Not our turn yet: hold the transfer to the trickle rate, but switch to
                     // full speed the moment a slot frees up.
